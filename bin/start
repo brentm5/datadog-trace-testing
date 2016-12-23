@@ -1,0 +1,78 @@
+#!/usr/bin/env ruby
+
+require 'sinatra'
+require 'ddtrace'
+require_relative '../lib/redis_client'
+require_relative '../lib/postgres_client'
+
+set :port, ENV['PORT'] || 3000
+set :bind, '0.0.0.0'
+set :server, %w[thin webrick]
+set :views, File.expand_path(File.join(File.dirname(__FILE__), '../', '/views'))
+
+tracer = Datadog.tracer
+
+tracer.set_service_info('hello-world', 'sinatra', 'web')
+
+get '/' do
+  tracer.trace('web.request') do |span|
+    span.service = 'hello-world'
+    span.resource = '/'
+    span.set_tag('http.method', request.request_method)
+
+    # Fetch from a cache first and then postgres if its not hot
+    tracer.trace('user.fetch') do
+      @user = Redis::Client.get_user('name')
+      @user ||= Postgres::Client.get_user('name')
+    end
+
+    # Just a random item
+    tracer.trace('user.calculation') do
+      sleep(rand/100)
+      puts @user
+    end
+
+    # Update the user in the database
+    tracer.trace('user.save') do
+      Postgres::Client.save_user(@user)
+    end
+
+    # Render the response
+    tracer.trace('template.render') do
+      body erb :index
+    end
+
+    # Set the response status before we exist
+    span.set_tag('http.status_code', status)
+  end
+end
+
+get '/fast' do
+  tracer.trace('web.request') do |span|
+    span.service = 'hello-world'
+    span.resource = '/fast'
+    span.set_tag('http.method', request.request_method)
+
+    tracer.trace('template.render') do
+      body ({ text: 'hello world' }).to_json
+    end
+
+    # Set the response status before we exist
+    span.set_tag('http.status_code', status)
+  end
+end
+
+get '/error' do
+  tracer.trace('web.request') do |span|
+    span.service = 'hello-world'
+    span.resource = '/error'
+    span.set_tag('http.method', request.request_method)
+
+    tracer.trace('template.render') do
+      body erb :error
+    end
+
+    # Set the response status before we exist
+    span.set_tag('http.status_code', status)
+  end
+end
